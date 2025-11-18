@@ -1,1 +1,3 @@
+# Premier_League_Classification
+
 Our goal was to classify win, loss, or tie for Premier League teams using classification models based on match statistics; Random Forest delivered the highest accuracy among decision trees, KNN, logistic regression, bagging, and random forest. This report helps clubs identify key performance factors and improve match strategies by leveraging machine learning classifiers.
