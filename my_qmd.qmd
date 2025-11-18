@@ -1,0 +1,227 @@
+---
+title: "Your Title"
+subtitle: "STAT 253: Statistical Machine Learning"
+date: today
+author: "Sohail"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    code-tools: true
+---
+
+
+
+<!-- Your report should follow the format specified in the Group Assignment 2 Instructions. Please review that document carefully! -->
+
+
+
+
+
+```{r}
+#| include: false
+# Load packages 
+library(tidyverse)
+library(tidymodels)
+library(reshape2)
+
+
+# Resolves package conflicts by preferring tidymodels functions
+tidymodels_prefer()
+
+# if your group needs any other packages, add them here
+
+```
+
+
+# Research Goals
+
+
+
+# Data
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+# read in data
+
+soccer <-read.csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2023/2023-04-04/soccer21-22.csv")
+
+head(soccer)
+
+# clean data, if necessary
+
+```
+
+```{r}
+
+soccer <- soccer %>%
+  mutate(FTR_decision = case_when(
+    FTR == "A" ~ "Loss",
+    FTR == "D" ~ "Tie",
+    FTR == "H" ~ "Won",
+    TRUE ~ NA_character_ # use NA_character_ for character output
+  ))
+
+
+soccer
+
+```
+
+
+# Model Building KNN
+
+```{r}
+# Using the top 2 variables (shots on target, shots) identified by Random Forest to classify FTR_Numeric (Full Time Results Numeric). Only using two variables for KNN due to curse of dimensionality. 
+
+result_plot <- soccer %>%
+  ggplot(aes(x = HST, y = AST, color = FTR_decision)) +
+  geom_point() +
+  scale_color_manual(values = c(
+    "Won" = "green",   # outcome string must match
+    "Loss" = "red",
+    "Tie" = "orange"
+  )) +
+  theme_minimal()
+
+result_plot
+
+```
+
+```{r}
+# testing with a new point 
+result_plot + 
+  geom_point(aes(y = 9, x = 5), color = "brown") # if 
+```
+
+```{r}
+# Load packages
+library(tidymodels)
+library(kknn)
+
+# Resolves package conflicts by preferring tidymodels functions
+tidymodels_prefer()
+```
+```{r}
+soccer<-soccer %>% 
+  mutate(FTR_decision = as.factor(FTR_decision))
+```
+
+
+```{r}
+# STEP 1: KNN model specification
+knn_spec <- nearest_neighbor() %>%
+  set_mode("classification") %>% 
+  set_engine(engine = "kknn") %>% 
+  set_args(neighbors = tune())
+
+# STEP 2: variable recipe
+variable_recipe <- recipe(FTR_decision ~AST + HST, data = soccer) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+
+# STEP 3: KNN workflow
+knn_workflow <- workflow() %>% 
+  add_recipe(variable_recipe) %>% 
+  add_model(knn_spec)
+
+# STEP 4: Estimate multiple KNN models using a range of possible K values
+set.seed(253)
+knn_models <- knn_workflow %>% 
+  tune_grid(
+    grid = grid_regular(neighbors(range = c(1, 20)), levels = 20),
+    resamples = vfold_cv(soccer, v = 10),
+    metrics = metric_set(accuracy)
+  )
+
+```
+
+```{r}
+knn_models %>% 
+  collect_metrics()
+```
+
+```{r}
+knn_models %>% 
+  autoplot()
+```
+
+```{r}
+best_K <- select_best(knn_models, metric = "accuracy")
+best_K
+```
+
+```{r}
+knn_models %>% 
+  collect_metrics() %>% 
+  filter(neighbors == best_K$neighbors)
+```
+
+```{r}
+best_K
+final_knn_model <- knn_workflow %>% 
+  finalize_workflow(parameters = best_K) %>% 
+  fit(data = soccer)
+```
+
+```{r}
+new_df<- data.frame(
+  AST = 3,
+  HST = 7
+)
+
+final_knn_model %>% 
+  predict(new_data = new_df)  
+```
+
+
+# Implementation
+
+We used tidymodels to implement this model building process. See code below for full details.
+
+<details>
+<summary>View Code</summary>
+
+```{r}
+#| message: false
+#| warning: false
+
+# Include all model building code in here.
+# Make sure to include comments explaining what your code does.
+
+
+```
+
+</details>
+
+
+
+# Model Evaluation
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+# visualization
+
+```
+
+
+
+# Contributions
+
+
+
+# Appendix
+
+```{r}
+#| eval: false
+# put code for any other models or visualizations that you considered here
+# use comments to explain what your code is doing
+```
+

@@ -1,0 +1,722 @@
+---
+title: "Predicting Premier League Games"
+subtitle: "STAT 253: Statistical Machine Learning"
+date: today
+author: "Sam, Xander, Tanguy, and Sohail"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    code-tools: true
+---
+
+
+
+<!-- Your report should follow the format specified in the Group Assignment 2 Instructions. Please review that document carefully! -->
+
+
+
+
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# Load packages 
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library(reshape2)
+library(kknn)
+library(ISLR)
+library(shiny)
+library(rpart)       
+library(rpart.plot)   
+library(randomForest) 
+library(infer)        
+library(ranger)
+library (dplyr)
+library (yardstick)
+
+# Resolves package conflicts by preferring tidymodels functions
+tidymodels_prefer()
+
+# if your group needs any other packages, add them here
+
+```
+
+
+# Research Goals
+
+The objective of this report is to identify key indicators of winning results for Premier League clubs. By way of finding statistical characteristics that best predict winning results, this report will identify key variables and produce a robust model for clubs to employ. While it is true that more favourable statistics often come hand-in-hand with a favourable result, and that conversely, favourable statistics don’t always guarantee results, this report will at a minimum help contextualize results. For instance, if a team wins despite our model predicting a loss based on match data, a coach might conclude that, result aside, the team needs to improve its performance to achieve consistent success rather than relying on statistical outliers.
+
+
+# Data
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+# read in data
+soccer <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2023/2023-04-04/soccer21-22.csv")
+
+# clean data, if necessary
+soccer <- soccer %>%
+  mutate(
+    Date_raw = Date,
+    Date = parse_date_time(Date, orders = c("dmy","ymd","mdy")) %>% as.Date()
+  ) %>%
+  arrange(Date) %>%
+  mutate(
+    Winner = case_when(
+      FTR == "H" ~ HomeTeam,
+      FTR == "A" ~ AwayTeam,
+      FTR == "D" ~ NA_character_,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  group_by(HomeTeam) %>%
+  arrange(Date, .by_group = TRUE) %>%
+  mutate(last_game_win_home = dplyr::lag(Winner == HomeTeam)) %>%  # specify here
+  ungroup() %>%
+  group_by(AwayTeam) %>%
+  arrange(Date, .by_group = TRUE) %>%
+  mutate(last_game_win_away = dplyr::lag(Winner == AwayTeam)) %>%  # and here
+  ungroup() %>%
+  mutate(
+    last_game_win_home = coalesce(last_game_win_home, FALSE),
+    last_game_win_away = coalesce(last_game_win_away, FALSE))
+
+soccer <- soccer %>%
+  mutate(FTR_numeric = case_when(
+    FTR == "A" ~ 1,
+    FTR == "D" ~ 2,
+    FTR == "H" ~ 3,
+    TRUE ~ NA_real_  # in case of missing or unexpected values
+  ))
+
+soccer$FTR <- factor(soccer$FTR)
+```
+
+Our findings are derived from data from the 21/22 Premier League season. Each row is a game, yielding 380 total observations. Within each row contains logistic information (such as home/away team, date, and referee, etc.) as well as some in-game statistics (corners, red cards, shots on goal, etc.). Our main outcome of interest of course is, “FTR,” or the full time result. 
+
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+# visualization
+quant_data <- soccer %>%
+  select(where(is.numeric))
+
+cor_matrix <- cor(quant_data)
+cor_matrix[lower.tri(cor_matrix)] <- NA
+cor_matrix <- cor_matrix %>% 
+  melt() %>% 
+  na.omit() %>% 
+  rename(correlation = value)
+
+# Visualize the correlation for each pair of variables
+ggplot(cor_matrix, aes(x = Var1, y = Var2, fill = correlation)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(
+    low = "blue", high = "red", mid = "white", 
+    midpoint = 0, limit = c(-1,1)) +
+  labs(x = "", y = "") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  coord_fixed()
+
+```
+
+
+# Model Building
+
+First and foremost, our group pre-screened our variables of interest to maximize insight but also real-world applicability for clubs. Hence, we removed full-time and half-time goal variables, as their relation to the final score is self-evident and takes away from our true findings. Second, we exclude the referee variable because officiating styles vary with factors like foul frequency and home crowd pressure, meaning their inclusion would not yield independent or meaningful insights. We also exclude considerations for individual teams (i.e Manchester City versus Watford). The reasons for this are threefold, first data over only one season wouldn’t generate robust results for either team strength or stadium atmosphere. Second, team performance varies greatly year-to-year, making findings from a previous season, skewed by past performance, obsolete. Finally, relegation muddies our analysis as the Premier League has a distinctly different composition from year to year. We also created last_game_win variables, which simply indicates if the home and away teams have won their previous game. This leaves us with the variables: red cards, yellow cards, shots, shots on target, fouls, corners, and last_game_win. 
+
+Our final model is a random forest, a model which predicts the outcome of the game through many trees (pictured below). A tree, the basic unit in a forest, predicts the outcome of a game through a series of splits in our predictors as depicted below. However, trees tend to be extremely variable and fail to effectively predict data outside of the data set. Our random forest produces 500 trees, each trained on a part of the data and tested on the other, to predict the outcome of each game, reducing variability in our predictions. In essence, this model takes the majority ruling (Away Win / Draw / Home Win) among all of our trees given a set of data points, to come to a consensus. In our case, the random forest predicted the correct outcome of the game 69% of the time. The accuracy of the random forest outperforms that of two other models with similar strategies: single tree (below) and KNN. We also prefer this model compared to a traditional logistic regression because regression can only predict two of our three game outcomes. We also prefer the random forest because it determines which factors (shots on goal, corner kicks, etc.) are the strongest predictors and which are weak predictors. This is a key feature of our model (that KNN and logistic regression can’t reproduce) which allows us to delve deeper into our key indicators. If we plot shots on goal for example, we see that specific densities are visually associated with different results. Such a visualization is both striking and insightful for players and coaches to see. 
+	
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+# Load 1 Tree
+tree_spec <- decision_tree() %>%
+  set_mode("classification") %>% 
+  set_engine("rpart") %>%
+  set_args(cost_complexity = 0.0, min_n = 2, tree_depth = 30)
+
+big_tree <- tree_spec %>%
+  fit(FTR ~ HS+AS+HST+AST+HF+AF+HC+AC+HY+AY+HR+AR,
+      data = soccer)
+
+# Plot Tree
+rpart.plot(
+  big_tree %>% extract_fit_engine(),
+  type = 0,
+  cex = 0.5,          # shrink overall font size (0.3–0.7 works well)
+  tweak = 1.0,        # adjust whitespace around nodes (0.8–1.2)
+  extra = 104,        # show more compact info inside nodes
+  fallen.leaves = TRUE
+)
+```
+
+
+```{r}	
+ggplot(data = soccer, aes(x = HST, fill = FTR)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_discrete(
+    labels = c("A" = "Away victory",
+               "D" = "Draw",
+               "H" = "Home victory")) +
+  labs(
+    title = "Home Shots on Target by Result",
+    x = "Home Shots on Target",
+    y = NULL,
+    fill = "Match Outcome") +
+  theme(axis.text.y  = element_blank(),axis.ticks.y = element_blank())
+```
+
+
+# Implementation
+
+We used tidymodels to implement this model building process. See code below for full details.
+
+<details>
+<summary>View Code</summary>
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+# Include all model building code in here.
+# Make sure to include comments explaining what your code does.
+
+# Ensure Reproducibility
+set.seed(253)
+
+# Set forest 
+
+soccer_forest <- rand_forest()  %>%
+  set_mode("regression") %>%
+  set_engine(engine = "ranger") %>% 
+  set_args(
+    mtry = NULL,
+    trees = 500,
+    min_n = 2,
+    probability = FALSE,    
+    importance = "impurity" 
+  )
+
+#Run Forest
+
+soccer_forest_fit <- soccer_forest %>%
+  fit(FTR_numeric ~ HS+AS+HST+AST+HF+AF+HC+AC+HY+AY+HR+AR+last_game_win_home+last_game_win_away, data = soccer)
+
+soccer_forest_fit
+
+
+```
+
+</details>
+
+
+
+# Model Evaluation
+
+Below are our parameters and metrics for our trees and data. We produce 500 trees using the 380 games for which we have data, predicting with the variables we indicate above. The final number, the OOB prediction error, indicates what portion of our data—not included in our sample— we fail to predict, which is 31%, meaning that we accurately predict the outcome of a game 69% of the time.
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+# Show Results
+soccer_forest_fit
+```
+
+Our model's accuracy can be visualized using the below confusion matrix. The matrix shows the relationship between real and predicted values. Accurate predictions are seen in the top left,  middle, and bottom right squares, while values in other squares are incorrect predictions. As you can see, our model is much better at predicting wins and losses correctly than it is draws.
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+
+# Create OOB confusion matrix
+engine <- soccer_forest_fit %>% 
+  extract_fit_engine()
+
+pred_raw <- engine$predictions   
+
+# Convert to class labels:
+if (is.matrix(pred_raw)) {
+  # Take the column (class) with the highest probability for each row
+  pred_class <- colnames(pred_raw)[max.col(pred_raw, ties.method = "first")]
+  
+  # Make it a factor with the same levels/order as FTR
+  pred_class <- factor(pred_class, levels = levels(soccer$FTR))
+} else {
+  pred_class <- pred_raw
+}
+
+
+oob_df <- tibble(
+  FTR         = soccer$FTR,   # true class
+  .pred_class = pred_class    # OOB-predicted class
+)
+
+# Create Confusion Matrix
+conf_mat(oob_df, truth = FTR, estimate = .pred_class)
+
+
+
+# Plot Confusion Matrix
+autoplot(
+  conf_mat(oob_df, truth = FTR, estimate = .pred_class),
+  type = "heatmap"
+)
+
+unique(pred_class)
+unique(FTR)
+```
+Finally, below we can see which predictors are the strongest and weakest predictors in the model. Home and away shots on target are the most important in predicting a win by a considerable margin, followed by shots and corner kicks. Red cards are among the least important predictors.
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+# visualization
+soccer_forest_fit%>%
+  extract_fit_engine() %>%
+  pluck("variable.importance") %>% 
+  sort(decreasing = TRUE)
+
+# Create VIP visualization
+library(vip)
+soccer_forest_fit %>% 
+  vip(geom = "point", num_features = 15)
+```
+
+To conclude, we feel that our model provides valuable insight in predicting the outcome of a soccer game, relying on variables like shots on target and corner kicks to correctly predict the outcome of a game 69% of the time.
+
+
+
+# Contributions
+Sohail contributed with reforming  data for KNN, fitting and building multiple (20) KNN models with range of K values (1,20) considering the scale of shots of target and shots. He yielded a 60% accuracy with the best model having 13 K Nearest Neighbors. Due to relativelyly lower accuracy we did not end up choosing the KNN model. 
+
+Xander contributed primarily to model building and building the correlation matrix. He tried several different models - first 10 trees with different cost-parameter values to find the one with the best accuracy, then creating a tree using bagging, and finally creating a random forest model with 500 trees. We decided on the random forest model because it had the lowest OOB error rate, making it our most accurate model. He did not participate much in the final writeup of the project. 
+
+Sam contributed to this project in two ways. The first was model building, as Sam built and tested two  models (tree and regression). Neither model was selected for the final report. The second was the creation of the final writeup, as Sam compiled and trimmed the code needed for the final submission, and wrote part of the section on model selection and the full section on model evaluation.
+
+I (Tanguy) helped with the initial data wrangling stage, creating the new “last_game_win” variables and creating a series of visualizations including the density plot that was used in the final report. I also had a large role in the data selection process which helped me write up the Research Goals, Data and half of the Model Building sections. While I ran the tree on my own computer, we did not end up choosing this model. Once the writeup was finished, I proofread the text and identified inconsistencies in our appendices and final forest model. 
+
+# Appendix
+
+KNN
+
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# changed it to loss, win and tie for simplicity in classifications
+
+soccer <- soccer %>%
+  mutate(FTR_decision = case_when(
+    FTR == "A" ~ "Loss",
+    FTR == "D" ~ "Tie",
+    FTR == "H" ~ "Won",
+    TRUE ~ NA_character_ # use NA_character_ for character output
+  ))
+
+
+soccer
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# Using the top 2 variables (shots on target home and shots on target away) identified by Random Forest to classify 
+# FTR_Numeric (FTR_Numeric). Only using two variables for KNN due to the curse of dimensionality. 
+
+result_plot <- soccer %>%
+  ggplot(aes(x = HST, y = AST, color = FTR_decision)) +
+  geom_point() +
+  scale_color_manual(values = c(
+    "Won" = "green",   
+    "Loss" = "red",
+    "Tie" = "orange"
+  )) +
+  theme_minimal()
+
+result_plot
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# Load packages
+library(tidymodels)
+library(kknn)
+
+# Resolves package conflicts by preferring tidymodels functions
+tidymodels_prefer()
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# STEP 1: KNN model specification
+knn_spec <- nearest_neighbor() %>%
+  set_mode("classification") %>% 
+  set_engine(engine = "kknn") %>% 
+  set_args(neighbors = tune())
+
+# STEP 2: variable recipe
+variable_recipe <- recipe(FTR_decision ~AST + HST, data = soccer) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+
+# STEP 3: KNN workflow
+knn_workflow <- workflow() %>% 
+  add_recipe(variable_recipe) %>% 
+  add_model(knn_spec)
+
+# STEP 4: Estimate multiple KNN models using a range of possible K values
+set.seed(253)
+knn_models <- knn_workflow %>% 
+  tune_grid(
+    grid = grid_regular(neighbors(range = c(1, 20)), levels = 20),
+    resamples = vfold_cv(soccer, v = 10),
+    metrics = metric_set(accuracy)
+  )
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+knn_models %>% 
+  collect_metrics()
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+knn_models %>% 
+  autoplot()
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+best_K <- select_best(knn_models, metric = "accuracy")
+best_K
+
+
+# Finding the nearest neighbor value that yields the highest accuracy
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+knn_models %>% 
+  collect_metrics() %>% 
+  filter(neighbors == best_K$neighbors)
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+best_K
+final_knn_model <- knn_workflow %>% 
+  finalize_workflow(parameters = best_K) %>% 
+  fit(data = soccer)
+
+```
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+new_df<- data.frame(
+  AST = 3,
+  HST = 7
+)
+
+final_knn_model %>% 
+  predict(new_data = new_df)  
+
+#Predicting a new point
+
+```
+# Tree
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+soccer_train <- soccer %>%
+  select(FTR, HS, AS, HST, AST, HF, AF, HC, AC, HY, AY, HR, AR, last_game_win_home, last_game_win_away)
+
+
+# STEP 1: tree specification
+tree_spec <- decision_tree() %>%
+  set_mode("classification") %>% 
+  set_engine(engine = "rpart") %>% 
+  set_args(cost_complexity = 0, min_n = 5, tree_depth = 30)
+
+
+# STEP 2: Build the tree! No tuning (hence no workflows) necessary.
+original_tree <- tree_spec %>% 
+  fit(FTR ~ ., data = soccer_train)
+
+# Plot the tree
+original_tree %>% 
+  extract_fit_engine() %>% 
+  plot(margin = 0) 
+original_tree %>% 
+  extract_fit_engine() %>% 
+  text(cex = 0.7)
+
+```
+
+Forest of 10 trees: 
+
+```{r}
+
+tree_spec <- decision_tree() %>%
+  set_mode("classification") %>% 
+  set_engine(engine = "rpart") %>% 
+  set_args(cost_complexity = tune(),  
+           min_n = 2, 
+           tree_depth = 30)
+
+variable_recipe_big <- recipe(FTR ~ HS+AS+HST+AST+HF+AF+HC+AC+HY+AY+HR+AR+last_game_win_home+last_game_win_away, data = soccer)
+    
+tree_workflow_big <- workflow() %>% 
+  add_recipe(variable_recipe_big) %>% 
+  add_model(tree_spec)
+
+set.seed(253)
+tree_models_big <- tree_workflow_big %>% 
+  tune_grid(
+    grid = grid_regular(cost_complexity(range = c(-5, 0.1)), levels = 10),
+    resamples = vfold_cv(soccer, v = 10),
+    metrics = metric_set(accuracy)
+  )
+```
+
+```{r}
+soccer_tree <- tree_models_big %>%
+  select_best(metric = "accuracy")
+
+soccer_tree
+
+show_best(tree_models_big, metric = "accuracy", n = 1)
+
+
+big_tree <- tree_workflow_big %>% 
+  finalize_workflow(parameters = soccer_tree) %>% 
+  fit(data = soccer)
+
+big_tree %>% 
+  extract_fit_engine() %>% 
+  rpart.plot(cex = 0.8, type = 0)
+
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+big_tree %>%
+  extract_fit_engine() %>%
+  pluck("variable.importance") %>% 
+  sort(decreasing = TRUE)
+
+library(vip)
+big_tree %>% 
+  vip(geom = "point", num_features = 15)
+```
+
+Bagging:
+
+```{r}
+set.seed(3528541) #Xander's number
+
+tree_spec <- decision_tree() %>%
+  set_mode("classification") %>% 
+  set_engine(engine = "rpart") %>% 
+  set_args(cost_complexity = 0,  
+           min_n = 2, 
+           tree_depth = 4)
+
+soccer$FTR <- as.factor(soccer$FTR)
+
+
+bag_soccer <- sample_n(soccer, size = nrow(soccer), replace = TRUE)
+
+bag_tree <- tree_spec %>% 
+  fit(FTR ~ HS+AS+HST+AST+HF+AF+HC+AC+HY+AY+HR+AR+last_game_win_home+last_game_win_away,data = soccer)
+
+# Plot your tree
+bag_tree %>% 
+  predict(new_data = soccer) %>% 
+  cbind(soccer) %>% 
+  conf_mat(
+    truth = FTR,
+    estimate = .pred_class
+  )
+
+bag_tree %>% 
+  extract_fit_engine() %>% 
+  rpart.plot(cex = 0.8, type = 0)
+
+
+```
+
+
+Regression
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+soccer <- soccer[soccer$FTR != "D", ] #exclude draws
+```
+
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+soccer$FTR <- as.character(soccer$FTR)
+soccer$FTR[soccer$FTR == "D"] <- "A" #count draws as losses
+soccer$FTR <- as.factor(soccer$FTR)
+
+
+#Making sure R reads our outcome variable as a binary categorical variable
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+soccer <- soccer %>%
+  mutate(FTR = relevel(FTR, ref = "A"))
+
+# Away win is level, this means Home win = 1
+```
+
+```{r exercises-step1, eval=TRUE}
+#| message: false
+#| warning: false
+#| echo: false
+logistic_spec <- logistic_reg() %>%
+  set_mode("classification") %>% 
+  set_engine("glm")
+```
+
+```{r exercises-step2, eval=TRUE}
+#| message: false
+#| warning: false
+#| echo: false
+variable_recipe <- recipe(FTR ~ HST + AST + HS + AS + HF + AF + HC + AC + HY + AY + HR + AR + last_game_win_home + last_game_win_away, data = soccer)
+
+
+```
+
+```{r exercises-step3, eval=TRUE}
+#| message: false
+#| warning: false
+#| echo: false
+logistic_workflow <- workflow() %>% 
+  add_recipe(variable_recipe) %>%
+  add_model(logistic_spec) 
+```
+
+```{r exercises-step4, eval=TRUE}
+#| message: false
+#| warning: false
+#| echo: false
+logistic_model <- logistic_workflow %>% 
+  fit(data = soccer)
+```
+
+```{r exercises-step5, eval=TRUE}
+#| message: false
+#| warning: false
+#| echo: false
+logistic_model %>% 
+  tidy()
+
+# Transform coefficients and confidence intervals to the odds scale
+# These are odds ratios (OR)
+logistic_model %>% 
+  tidy() %>%
+  mutate(
+    OR = exp(estimate),
+    OR.conf.low = exp(estimate - 1.96*std.error),
+    OR.conf.high = exp(estimate + 1.96*std.error)
+  )
+```
+
+```{r classify, eval = TRUE}
+#| message: false
+#| warning: false
+#| echo: false
+in_sample_classifications <- logistic_model %>% 
+  augment(new_data = soccer)
+    
+# Check it out
+head(in_sample_classifications)
+```
+
+```{r confusion, eval = TRUE}
+#| message: false
+#| warning: false
+#| echo: false
+in_sample_confusion <- in_sample_classifications %>% 
+  conf_mat(truth = FTR, estimate = .pred_class)
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# Check it out in table form
+in_sample_confusion
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+summary(in_sample_confusion, event_level = "second")
+```
+
+
+
+
+
